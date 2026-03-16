@@ -1,0 +1,2 @@
+MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
+MAX_MODEL_LENGTH = 8192
