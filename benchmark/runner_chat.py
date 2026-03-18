@@ -48,7 +48,7 @@ class AsyncEngineClient:
 @click.command()
 @click.option('--url', default='http://localhost:8000', help='URL of the engine')
 @click.option('--data', required=True, type=click.Path(exists=True), help='Path to the performance prompts JSONL file')
-@click.option('--concurrency', default=100, help='Concurrency level')
+@click.option('--concurrency', default=128, help='Concurrency level')
 @click.option('--timeout', default=30, type=int, help='Request timeout in seconds')
 def main(url, data, concurrency, timeout):
     """Benchmark suite for Track 2: Customer Chat."""
