@@ -1,6 +1,6 @@
 # Chat Engine Performance Optimizations
 
-## 1. The Baseline (`main` branch)
+## 1. Baseline (`main` branch)
 Prior to optimization, the vLLM engine relied on the following framework defaults:
 - `max_model_len` = 8192 (Default)
 - `gpu_memory_utilization` = 0.90 (Default)
