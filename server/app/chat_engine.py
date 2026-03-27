@@ -1,10 +1,26 @@
+from __future__ import annotations
+
+import inspect
+
 from app.schemas import ChatRequest, ChatResponse
-from app.constants import MODEL_NAME, MAX_MODEL_LENGTH, RESPONSE_CACHE_MAX_SIZE
+from app.constants import (
+    ENABLE_CHUNKED_PREFILL,
+    ENABLE_PREFIX_CACHING,
+    GPU_MEMORY_UTILIZATION,
+    KV_CACHE_DTYPE,
+    MAX_MODEL_LENGTH,
+    MAX_NUM_BATCHED_TOKENS,
+    MAX_NUM_SEQS,
+    MODEL_NAME,
+    NUM_SCHEDULER_STEPS,
+    RESPONSE_CACHE_MAX_SIZE,
+)
 from app.response_cache import CachedResponse, ResponseCache
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.sampling_params import SamplingParams
 from vllm.utils import random_uuid
+
 
 class ChatEngine:
     """
@@ -12,7 +28,7 @@ class ChatEngine:
     """
     def __init__(self):
         self.model_name = MODEL_NAME
-        self.engine = None
+        self.engine: AsyncLLMEngine | None = None
         self.tokenizer = None
         self.is_ready = False
         self.cache = ResponseCache(max_size=RESPONSE_CACHE_MAX_SIZE)
@@ -23,17 +39,39 @@ class ChatEngine:
             
         print(f"Initializing vLLM with model: {self.model_name}...")
 
-        engine_args = AsyncEngineArgs(
+        print(f"  KV-cache dtype       : {KV_CACHE_DTYPE}")
+        print(f"  Chunked prefill      : {ENABLE_CHUNKED_PREFILL}")
+        print(f"  GPU memory util      : {GPU_MEMORY_UTILIZATION}")
+        print(f"  Max num sequences    : {MAX_NUM_SEQS}")
+        print(f"  Prefix caching (APC) : {ENABLE_PREFIX_CACHING}")
+        print(f"  Scheduler steps      : {NUM_SCHEDULER_STEPS}")
+        print(f"  Max batched tokens   : {MAX_NUM_BATCHED_TOKENS}")
+        print(f"  Max model length     : {MAX_MODEL_LENGTH}")
+
+        engine_kwargs = dict(
             model=self.model_name,
-            gpu_memory_utilization=0.9,
+            gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             max_model_len=MAX_MODEL_LENGTH,
             trust_remote_code=True,
+            kv_cache_dtype=KV_CACHE_DTYPE,
+            enable_chunked_prefill=ENABLE_CHUNKED_PREFILL,
+            max_num_seqs=MAX_NUM_SEQS,
+            enable_prefix_caching=ENABLE_PREFIX_CACHING,
+            num_scheduler_steps=NUM_SCHEDULER_STEPS,
+            max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
         )
-        
+
+        valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
+        unsupported = [k for k in engine_kwargs if k not in valid_params]
+        for key in unsupported:
+            print(f"  WARNING: dropping unsupported arg '{key}' (not in this vLLM version)")
+            del engine_kwargs[key]
+
+        engine_args = AsyncEngineArgs(**engine_kwargs)
+
         self.engine = AsyncLLMEngine.from_engine_args(engine_args)
-        
         self.tokenizer = await self.engine.get_tokenizer()
-        
+
         self.is_ready = True
         print("vLLM Engine initialized and ready.")
 
