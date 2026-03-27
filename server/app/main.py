@@ -8,10 +8,8 @@ engine = ChatEngine()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Start the engine initialization in the background
     asyncio.create_task(engine.initialize())
     yield
-    # Shutdown: Clean up resources if needed
     pass
 
 app = FastAPI(title="Track 2: Chat Engine", lifespan=lifespan)

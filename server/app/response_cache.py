@@ -21,7 +21,6 @@ class CachedResponse:
     """
     Data class representing a cached chat response.
     """
-
     output: str
     logprobs: list[float]
 
