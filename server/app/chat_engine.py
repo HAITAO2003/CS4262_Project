@@ -1,5 +1,6 @@
 from app.schemas import ChatRequest, ChatResponse
-from app.constants import MODEL_NAME, MAX_MODEL_LENGTH
+from app.constants import MODEL_NAME, MAX_MODEL_LENGTH, RESPONSE_CACHE_MAX_SIZE
+from app.response_cache import CachedResponse, ResponseCache
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.sampling_params import SamplingParams
@@ -14,6 +15,7 @@ class ChatEngine:
         self.engine = None
         self.tokenizer = None
         self.is_ready = False
+        self.cache = ResponseCache(max_size=RESPONSE_CACHE_MAX_SIZE)
 
     async def initialize(self):
         if self.is_ready:
@@ -45,6 +47,15 @@ class ChatEngine:
             tokenize=False, 
             add_generation_prompt=True
         )
+
+        is_deterministic = request.temperature == 0 or request.temperature is None
+        cache_key = None
+        if is_deterministic:
+            cache_key = ResponseCache.make_key(prompt, request.temperature, request.max_tokens)
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return ChatResponse(output=cached.output, logprobs=cached.logprobs)
+
         sampling_params = SamplingParams(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
@@ -80,5 +91,8 @@ class ChatEngine:
                     logprobs.append(step_logprobs[token_id].logprob)
                 else:
                     raise RuntimeError(f"Token ID {token_id} not found in logprobs at step {i}")
-        
+
+        if is_deterministic and cache_key is not None:
+            self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
+
         return ChatResponse(output=text_output, logprobs=logprobs)
