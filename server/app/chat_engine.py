@@ -113,80 +113,98 @@ class ChatEngine:
         self.is_ready = True
         print("vLLM Engine initialized and ready.")
 
-    async def generate(self, request: ChatRequest) -> ChatResponse:
-        """
-        Generate a language model response using the provided chat request constraints.
-        Applies response caching and SLA-aware priority scheduling automatically.
-        """
-        if not self.is_ready:
-            raise Exception("Engine is still initializing. Please try again later.")
+   # chat_engine.py — replace generate() entirely
 
-        messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
-        prompt = self.tokenizer.apply_chat_template(
-            messages_dicts,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+import time
+import json
 
-        is_deterministic = request.temperature == 0 or request.temperature is None
-        cache_key = ""
-        if is_deterministic:
-            cache_key = ResponseCache.make_key(prompt, request.temperature, request.max_tokens)
-            cached = self.cache.get(cache_key)
-            if cached is not None:
-                return ChatResponse(output=cached.output, logprobs=cached.logprobs)
+async def generate(self, request: ChatRequest) -> ChatResponse:
+    t0 = time.perf_counter()
 
-        estimated_tokens = len(prompt) // 4
-        if request.priority is not None:
-            priority = request.priority
-        else:
-            priority = self.analytics.compute_priority(prompt, estimated_tokens)
+    if not self.is_ready:
+        raise Exception("Engine is still initializing. Please try again later.")
 
-        exact_hash, template_hash = self.analytics.get_hashes(prompt)
+    # ── Stage 1-2: Preprocessing ──
+    messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
+    prompt = self.tokenizer.apply_chat_template(
+        messages_dicts, tokenize=False, add_generation_prompt=True,
+    )
 
-        sampling_params = SamplingParams(
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            logprobs=1,
-        )
+    is_deterministic = request.temperature == 0 or request.temperature is None
+    cache_key = ""
+    if is_deterministic:
+        cache_key = ResponseCache.make_key(prompt, request.temperature, request.max_tokens)
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return ChatResponse(output=cached.output, logprobs=cached.logprobs)
 
-        request_id = random_uuid()
-        results_generator = self.engine.generate(
-            prompt,
-            sampling_params,
-            request_id,
-            priority=priority,
-        )
+    estimated_tokens = len(prompt) // 4
+    if request.priority is not None:
+        priority = request.priority
+    else:
+        priority = self.analytics.compute_priority(prompt, estimated_tokens)
 
-        final_output = None
-        async for request_output in results_generator:
-            final_output = request_output
+    exact_hash, template_hash = self.analytics.get_hashes(prompt)
+    t_preprocess = time.perf_counter()
 
-        if final_output is None:
-            raise Exception("No output generated")
+    # ── Stage 3-5: Queue + Prefill + Decode ──
+    sampling_params = SamplingParams(
+        temperature=request.temperature,
+        max_tokens=request.max_tokens,
+        logprobs=1,
+    )
+    request_id = random_uuid()
+    results_generator = self.engine.generate(
+        prompt, sampling_params, request_id, priority=priority,
+    )
 
-        output_data = final_output.outputs[0]
-        text_output = output_data.text
+    first_token_time = None
+    final_output = None
+    async for request_output in results_generator:
+        if first_token_time is None:
+            first_token_time = time.perf_counter()
+        final_output = request_output
+    t_gen_done = time.perf_counter()
 
-        if output_data.logprobs is None:
-            raise RuntimeError("logprobs are missing from vLLM output")
-        if not output_data.token_ids:
-            raise RuntimeError("token_ids is empty, cannot provide logprobs")
+    # ── Stage 6: Response assembly ──
+    if final_output is None:
+        raise Exception("No output generated")
 
-        logprobs: list[float] = []
-        for i, token_id in enumerate(output_data.token_ids):
-            if i < len(output_data.logprobs):
-                step_logprobs = output_data.logprobs[i]
-                if token_id in step_logprobs:
-                    logprobs.append(step_logprobs[token_id].logprob)
-                else:
-                    raise RuntimeError(f"Token ID {token_id} not found in logprobs at step {i}")
+    output_data = final_output.outputs[0]
+    text_output = output_data.text
 
-        output_token_count = len(output_data.token_ids)
-        self.analytics.record_completion(exact_hash, template_hash, output_token_count)
+    if output_data.logprobs is None:
+        raise RuntimeError("logprobs are missing from vLLM output")
+    if not output_data.token_ids:
+        raise RuntimeError("token_ids is empty, cannot provide logprobs")
 
-        if is_deterministic and cache_key:
-            self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
+    logprobs: list[float] = []
+    for i, token_id in enumerate(output_data.token_ids):
+        if i < len(output_data.logprobs):
+            step_logprobs = output_data.logprobs[i]
+            if token_id in step_logprobs:
+                logprobs.append(step_logprobs[token_id].logprob)
+            else:
+                raise RuntimeError(f"Token ID {token_id} not found in logprobs at step {i}")
 
-        return ChatResponse(output=text_output, logprobs=logprobs)
+    # log detailed timing and token count metrics for this request
+    output_token_count = len(output_data.token_ids)
+    self.analytics.record_completion(exact_hash, template_hash, output_token_count)
 
+    if is_deterministic and cache_key:
+        self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
+    t_done = time.perf_counter()
+
+    with open("/tmp/stage_profile.jsonl", "a") as f:
+        f.write(json.dumps({
+            "preprocess_ms": round((t_preprocess - t0) * 1000, 3),
+            "ttft_ms": round((first_token_time - t_preprocess) * 1000, 3) if first_token_time else None,
+            "decode_ms": round((t_gen_done - first_token_time) * 1000, 3) if first_token_time else None,
+            "postprocess_ms": round((t_done - t_gen_done) * 1000, 3),
+            "total_ms": round((t_done - t0) * 1000, 3),
+            "output_tokens": output_token_count,
+            "tpot_ms": round((t_gen_done - first_token_time) * 1000 / output_token_count, 3)
+                if first_token_time and output_token_count > 0 else None,
+        }) + "\n")
+
+    return ChatResponse(output=text_output, logprobs=logprobs)

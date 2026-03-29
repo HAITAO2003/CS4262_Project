@@ -24,6 +24,7 @@ class Request:
     latency: float
     error: Optional[str]
     perplexity: Optional[float]
+    output_token_count: Optional[int] = None
 
 
 @dataclass
@@ -153,11 +154,12 @@ async def run_performance(url, data_path, concurrency, timeout, experiment_name)
                             latency=latency,
                             error=f"Missing 'output' in response: {response}",
                             perplexity=None,
+        
                         )
-                    
                     logprobs = response['logprobs']
                     avg_logprob = sum(logprobs) / len(logprobs)
                     perplexity = np.exp(-avg_logprob)
+                    output_token_count = len(logprobs)
 
                     return Request(
                         prompt=prompt,
@@ -167,6 +169,7 @@ async def run_performance(url, data_path, concurrency, timeout, experiment_name)
                         latency=latency,
                         error=None,
                         perplexity=float(perplexity),
+                        output_token_count=output_token_count,
                     )
                 except Exception as e:
                     print(f"\\n[ERROR] Prompt: {prompt[:30]}... Exception: {e}")
