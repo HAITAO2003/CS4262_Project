@@ -124,13 +124,7 @@ class ChatEngine:
 
         exact_hash, template_hash = self.analytics.get_hashes(prompt)
 
-        # ── Dynamic max_tokens: cap based on template history ──
         effective_max = request.max_tokens
-        if is_deterministic:
-            budget = self.analytics.estimate_decode_budget(template_hash)
-            if budget < request.max_tokens:
-                # p75 * 1.5 with floor of 64 — covers ~90% of requests
-                effective_max = min(request.max_tokens, max(int(budget * 1.5), 64))
 
         t_preprocess = time.perf_counter()
 
