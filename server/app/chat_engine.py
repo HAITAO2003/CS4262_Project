@@ -27,6 +27,8 @@ from app.constants import (
     RESPONSE_CACHE_MAX_SIZE,
     SCHEDULING_POLICY,
     SPECULATIVE_MODEL,
+    SPECULATIVE_METHOD,
+    TOKENIZER_NAME,
 )
 from app.prompt_analytics import PromptAnalytics
 from app.response_cache import CachedResponse, ResponseCache
@@ -78,8 +80,25 @@ class ChatEngine:
         print(f"  Speculative decoding : {ENABLE_SPECULATIVE}")
         print(f"  Response cache size  : {RESPONSE_CACHE_MAX_SIZE}")
 
+        speculative_config = {
+            "model": SPECULATIVE_MODEL,
+            "draft_tensor_parallel_size": 1,                    
+            "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
+        } if ENABLE_SPECULATIVE else None
+
+        if ENABLE_SPECULATIVE:
+            print(f"  Spec method          : {SPECULATIVE_METHOD}")
+            print(f"  Spec model           : {SPECULATIVE_MODEL}")
+            print(f"  Spec tokens          : {NUM_SPECULATIVE_TOKENS}")
+            if SPECULATIVE_MODEL == "[ngram]":
+                speculative_config["prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
+                print(f"  Ngram lookup max     : {NGRAM_PROMPT_LOOKUP_MAX}")
+            else:
+                speculative_config["method"] = SPECULATIVE_METHOD
+
         engine_kwargs: dict = dict(
             model=self.model_name,
+            tokenizer=TOKENIZER_NAME,
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             max_model_len=MAX_MODEL_LENGTH,
             trust_remote_code=True,
@@ -90,15 +109,8 @@ class ChatEngine:
             enable_prefix_caching=ENABLE_PREFIX_CACHING,
             num_scheduler_steps=NUM_SCHEDULER_STEPS,
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+            speculative_config=speculative_config,
         )
-
-        if ENABLE_SPECULATIVE:
-            engine_kwargs["speculative_model"] = SPECULATIVE_MODEL
-            engine_kwargs["num_speculative_tokens"] = NUM_SPECULATIVE_TOKENS
-            engine_kwargs["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
-            print(f"  Spec model           : {SPECULATIVE_MODEL}")
-            print(f"  Spec tokens          : {NUM_SPECULATIVE_TOKENS}")
-            print(f"  Ngram lookup max     : {NGRAM_PROMPT_LOOKUP_MAX}")
 
         valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
         unsupported = [k for k in engine_kwargs if k not in valid_params]
