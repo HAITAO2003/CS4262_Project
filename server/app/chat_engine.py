@@ -3,13 +3,15 @@ Chat engine with advanced vLLM optimisations and application-level caching.
 
 This module initializes the AsyncLLMEngine with specific optimizations 
 including KV-cache quantization, chunked prefill, specific memory utilization,
-and strict sequence limits. It also provides a cached generate method that uses 
-SLA-aware priority scheduling.
+and strict sequence limits. It also provides a cached generate method with
+dynamic max_tokens capping based on template output length statistics.
 """
 
 from __future__ import annotations
 
 import inspect
+import time
+import json
 
 from app.constants import (
     ENABLE_CHUNKED_PREFILL,
@@ -25,7 +27,6 @@ from app.constants import (
     NUM_SCHEDULER_STEPS,
     NUM_SPECULATIVE_TOKENS,
     RESPONSE_CACHE_MAX_SIZE,
-    SCHEDULING_POLICY,
     SPECULATIVE_MODEL,
 )
 from app.prompt_analytics import PromptAnalytics
@@ -38,19 +39,7 @@ from vllm.utils import random_uuid
 
 
 class ChatEngine:
-    """
-    High-performance chat engine wrapping vLLM's AsyncLLMEngine.
-    
-    Implements multi-layer optimizations:
-      1. Deterministic response caching
-      2. SLA-aware priority scheduling
-      3. Underlying vLLM hardware optimizations
-    """
-
     def __init__(self) -> None:
-        """
-        Initialize the ChatEngine state.
-        """
         self.model_name: str = MODEL_NAME
         self.engine: AsyncLLMEngine | None = None
         self.tokenizer = None
@@ -59,9 +48,6 @@ class ChatEngine:
         self.cache = ResponseCache(max_size=RESPONSE_CACHE_MAX_SIZE)
 
     async def initialize(self) -> None:
-        """
-        Asynchronously initialize the vLLM engine and tokenizer with configured kwargs.
-        """
         if self.is_ready:
             return
 
@@ -70,7 +56,6 @@ class ChatEngine:
         print(f"  Chunked prefill      : {ENABLE_CHUNKED_PREFILL}")
         print(f"  GPU memory util      : {GPU_MEMORY_UTILIZATION}")
         print(f"  Max num sequences    : {MAX_NUM_SEQS}")
-        print(f"  Scheduling policy    : {SCHEDULING_POLICY}")
         print(f"  Prefix caching (APC) : {ENABLE_PREFIX_CACHING}")
         print(f"  Scheduler steps      : {NUM_SCHEDULER_STEPS}")
         print(f"  Max batched tokens   : {MAX_NUM_BATCHED_TOKENS}")
@@ -86,7 +71,6 @@ class ChatEngine:
             kv_cache_dtype=KV_CACHE_DTYPE,
             enable_chunked_prefill=ENABLE_CHUNKED_PREFILL,
             max_num_seqs=MAX_NUM_SEQS,
-            scheduling_policy=SCHEDULING_POLICY,
             enable_prefix_caching=ENABLE_PREFIX_CACHING,
             num_scheduler_steps=NUM_SCHEDULER_STEPS,
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
@@ -108,103 +92,108 @@ class ChatEngine:
 
         engine_args = AsyncEngineArgs(**engine_kwargs)
         self.engine = AsyncLLMEngine.from_engine_args(engine_args)
-        self.tokenizer = await self.engine.get_tokenizer()
+
+        # Handle both sync and async get_tokenizer across vLLM versions
+        tokenizer = self.engine.get_tokenizer()
+        if inspect.isawaitable(tokenizer):
+            tokenizer = await tokenizer
+        self.tokenizer = tokenizer
 
         self.is_ready = True
         print("vLLM Engine initialized and ready.")
 
-   # chat_engine.py — replace generate() entirely
+    async def generate(self, request: ChatRequest) -> ChatResponse:
+        t0 = time.perf_counter()
 
-import time
-import json
+        if not self.is_ready:
+            raise Exception("Engine is still initializing. Please try again later.")
 
-async def generate(self, request: ChatRequest) -> ChatResponse:
-    t0 = time.perf_counter()
+        # ── Stage 1-2: Preprocessing ──
+        messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
+        prompt = self.tokenizer.apply_chat_template(
+            messages_dicts, tokenize=False, add_generation_prompt=True,
+        )
 
-    if not self.is_ready:
-        raise Exception("Engine is still initializing. Please try again later.")
+        is_deterministic = request.temperature == 0 or request.temperature is None
+        cache_key = ""
+        if is_deterministic:
+            cache_key = ResponseCache.make_key(prompt, request.temperature, request.max_tokens)
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return ChatResponse(output=cached.output, logprobs=cached.logprobs)
 
-    # ── Stage 1-2: Preprocessing ──
-    messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
-    prompt = self.tokenizer.apply_chat_template(
-        messages_dicts, tokenize=False, add_generation_prompt=True,
-    )
+        exact_hash, template_hash = self.analytics.get_hashes(prompt)
 
-    is_deterministic = request.temperature == 0 or request.temperature is None
-    cache_key = ""
-    if is_deterministic:
-        cache_key = ResponseCache.make_key(prompt, request.temperature, request.max_tokens)
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            return ChatResponse(output=cached.output, logprobs=cached.logprobs)
+        # ── Dynamic max_tokens: cap based on template history ──
+        effective_max = request.max_tokens
+        if is_deterministic:
+            budget = self.analytics.estimate_decode_budget(template_hash)
+            if budget < request.max_tokens:
+                # p75 * 1.5 with floor of 64 — covers ~90% of requests
+                effective_max = min(request.max_tokens, max(int(budget * 1.5), 64))
 
-    estimated_tokens = len(prompt) // 4
-    if request.priority is not None:
-        priority = request.priority
-    else:
-        priority = self.analytics.compute_priority(prompt, estimated_tokens)
+        t_preprocess = time.perf_counter()
 
-    exact_hash, template_hash = self.analytics.get_hashes(prompt)
-    t_preprocess = time.perf_counter()
+        # ── Stage 3-5: Queue + Prefill + Decode ──
+        sampling_params = SamplingParams(
+            temperature=request.temperature,
+            max_tokens=effective_max,
+            logprobs=1,
+        )
+        request_id = random_uuid()
+        results_generator = self.engine.generate(
+            prompt, sampling_params, request_id,
+        )
 
-    # ── Stage 3-5: Queue + Prefill + Decode ──
-    sampling_params = SamplingParams(
-        temperature=request.temperature,
-        max_tokens=request.max_tokens,
-        logprobs=1,
-    )
-    request_id = random_uuid()
-    results_generator = self.engine.generate(
-        prompt, sampling_params, request_id, priority=priority,
-    )
+        first_token_time = None
+        final_output = None
+        async for request_output in results_generator:
+            if first_token_time is None:
+                first_token_time = time.perf_counter()
+            final_output = request_output
+        t_gen_done = time.perf_counter()
 
-    first_token_time = None
-    final_output = None
-    async for request_output in results_generator:
-        if first_token_time is None:
-            first_token_time = time.perf_counter()
-        final_output = request_output
-    t_gen_done = time.perf_counter()
+        # ── Stage 6: Response assembly ──
+        if final_output is None:
+            raise Exception("No output generated")
 
-    # ── Stage 6: Response assembly ──
-    if final_output is None:
-        raise Exception("No output generated")
+        output_data = final_output.outputs[0]
+        text_output = output_data.text
 
-    output_data = final_output.outputs[0]
-    text_output = output_data.text
+        if output_data.logprobs is None:
+            raise RuntimeError("logprobs are missing from vLLM output")
+        if not output_data.token_ids:
+            raise RuntimeError("token_ids is empty, cannot provide logprobs")
 
-    if output_data.logprobs is None:
-        raise RuntimeError("logprobs are missing from vLLM output")
-    if not output_data.token_ids:
-        raise RuntimeError("token_ids is empty, cannot provide logprobs")
+        logprobs: list[float] = []
+        for i, token_id in enumerate(output_data.token_ids):
+            if i < len(output_data.logprobs):
+                step_logprobs = output_data.logprobs[i]
+                if token_id in step_logprobs:
+                    logprobs.append(step_logprobs[token_id].logprob)
+                else:
+                    raise RuntimeError(f"Token ID {token_id} not found in logprobs at step {i}")
 
-    logprobs: list[float] = []
-    for i, token_id in enumerate(output_data.token_ids):
-        if i < len(output_data.logprobs):
-            step_logprobs = output_data.logprobs[i]
-            if token_id in step_logprobs:
-                logprobs.append(step_logprobs[token_id].logprob)
-            else:
-                raise RuntimeError(f"Token ID {token_id} not found in logprobs at step {i}")
+        # ── Stage 7: Metrics + cache ──
+        output_token_count = len(output_data.token_ids)
+        self.analytics.record_completion(exact_hash, template_hash, output_token_count)
 
-    # log detailed timing and token count metrics for this request
-    output_token_count = len(output_data.token_ids)
-    self.analytics.record_completion(exact_hash, template_hash, output_token_count)
+        if is_deterministic and cache_key:
+            self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
+        t_done = time.perf_counter()
 
-    if is_deterministic and cache_key:
-        self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
-    t_done = time.perf_counter()
+        # ── Profiling log ──
+        with open("/tmp/stage_profile.jsonl", "a") as f:
+            f.write(json.dumps({
+                "preprocess_ms": round((t_preprocess - t0) * 1000, 3),
+                "ttft_ms": round((first_token_time - t_preprocess) * 1000, 3) if first_token_time else None,
+                "decode_ms": round((t_gen_done - first_token_time) * 1000, 3) if first_token_time else None,
+                "postprocess_ms": round((t_done - t_gen_done) * 1000, 3),
+                "total_ms": round((t_done - t0) * 1000, 3),
+                "output_tokens": output_token_count,
+                "effective_max_tokens": effective_max,
+                "tpot_ms": round((t_gen_done - first_token_time) * 1000 / output_token_count, 3)
+                    if first_token_time and output_token_count > 0 else None,
+            }) + "\n")
 
-    with open("/tmp/stage_profile.jsonl", "a") as f:
-        f.write(json.dumps({
-            "preprocess_ms": round((t_preprocess - t0) * 1000, 3),
-            "ttft_ms": round((first_token_time - t_preprocess) * 1000, 3) if first_token_time else None,
-            "decode_ms": round((t_gen_done - first_token_time) * 1000, 3) if first_token_time else None,
-            "postprocess_ms": round((t_done - t_gen_done) * 1000, 3),
-            "total_ms": round((t_done - t0) * 1000, 3),
-            "output_tokens": output_token_count,
-            "tpot_ms": round((t_gen_done - first_token_time) * 1000 / output_token_count, 3)
-                if first_token_time and output_token_count > 0 else None,
-        }) + "\n")
-
-    return ChatResponse(output=text_output, logprobs=logprobs)
+        return ChatResponse(output=text_output, logprobs=logprobs)
