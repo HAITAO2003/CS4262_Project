@@ -40,14 +40,15 @@ class ChatEngine:
         )
         if SPECULATIVE_MODEL:
             engine_kwargs["enable_chunked_prefill"] = False
-            spec_config = {
+            spec_config = {                                                                                                                          
                 "model": SPECULATIVE_MODEL,
                 "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
             }
             if SPECULATIVE_MODEL == "[ngram]":
                 spec_config["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
-            engine_kwargs["speculative_config"] = spec_config
-
+            if SPECULATIVE_METHOD:                                                                                                                   
+                spec_config["method"] = SPECULATIVE_METHOD
+                
         valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
         unsupported = [k for k in engine_kwargs if k not in valid_params]
         for k in unsupported:
