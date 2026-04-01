@@ -3,6 +3,8 @@ import time
 import json
 import os
 import warnings
+os.environ["VLLM_USE_TRITON_AWQ"] = "1"
+os.environ["VLLM_AWQ_USE_MARLIN"] = "0"
 from app.constants import *
 from app.prompt_analytics import PromptAnalytics
 from app.response_cache import CachedResponse, ResponseCache
@@ -28,6 +30,7 @@ class ChatEngine:
 
         engine_kwargs: dict = dict(
             model=self.model_name,
+            quantization="awq",
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             max_model_len=MAX_MODEL_LENGTH,
             trust_remote_code=True,
