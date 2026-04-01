@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l server/app/*.py benchmark/runner_chat.py)"
+    ]
+  }
+}

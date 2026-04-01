@@ -1,34 +1,9 @@
-"""
-Chat engine with advanced vLLM optimisations and application-level caching.
-
-This module initializes the AsyncLLMEngine with specific optimizations 
-including KV-cache quantization, chunked prefill, specific memory utilization,
-and strict sequence limits. It also provides a cached generate method with
-dynamic max_tokens capping based on template output length statistics.
-"""
-
-from __future__ import annotations
-
 import inspect
 import time
 import json
-
-from app.constants import (
-    ENABLE_CHUNKED_PREFILL,
-    ENABLE_PREFIX_CACHING,
-    ENABLE_SPECULATIVE,
-    GPU_MEMORY_UTILIZATION,
-    KV_CACHE_DTYPE,
-    MAX_MODEL_LENGTH,
-    MAX_NUM_BATCHED_TOKENS,
-    MAX_NUM_SEQS,
-    MODEL_NAME,
-    NGRAM_PROMPT_LOOKUP_MAX,
-    NUM_SCHEDULER_STEPS,
-    NUM_SPECULATIVE_TOKENS,
-    RESPONSE_CACHE_MAX_SIZE,
-    SPECULATIVE_MODEL,
-)
+import os
+import warnings
+from app.constants import *
 from app.prompt_analytics import PromptAnalytics
 from app.response_cache import CachedResponse, ResponseCache
 from app.schemas import ChatRequest, ChatResponse
@@ -51,18 +26,6 @@ class ChatEngine:
         if self.is_ready:
             return
 
-        print(f"Initializing vLLM with model: {self.model_name}...")
-        print(f"  KV-cache dtype       : {KV_CACHE_DTYPE}")
-        print(f"  Chunked prefill      : {ENABLE_CHUNKED_PREFILL}")
-        print(f"  GPU memory util      : {GPU_MEMORY_UTILIZATION}")
-        print(f"  Max num sequences    : {MAX_NUM_SEQS}")
-        print(f"  Prefix caching (APC) : {ENABLE_PREFIX_CACHING}")
-        print(f"  Scheduler steps      : {NUM_SCHEDULER_STEPS}")
-        print(f"  Max batched tokens   : {MAX_NUM_BATCHED_TOKENS}")
-        print(f"  Max model length     : {MAX_MODEL_LENGTH}")
-        print(f"  Speculative decoding : {ENABLE_SPECULATIVE}")
-        print(f"  Response cache size  : {RESPONSE_CACHE_MAX_SIZE}")
-
         engine_kwargs: dict = dict(
             model=self.model_name,
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
@@ -75,23 +38,19 @@ class ChatEngine:
             num_scheduler_steps=NUM_SCHEDULER_STEPS,
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
         )
-
-        if ENABLE_SPECULATIVE:
+        if SPECULATIVE_MODEL:
             engine_kwargs["speculative_model"] = SPECULATIVE_MODEL
             engine_kwargs["num_speculative_tokens"] = NUM_SPECULATIVE_TOKENS
-            engine_kwargs["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
-            print(f"  Spec model           : {SPECULATIVE_MODEL}")
-            print(f"  Spec tokens          : {NUM_SPECULATIVE_TOKENS}")
-            print(f"  Ngram lookup max     : {NGRAM_PROMPT_LOOKUP_MAX}")
+            if SPECULATIVE_MODEL == "[ngram]":
+                engine_kwargs["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
 
         valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
         unsupported = [k for k in engine_kwargs if k not in valid_params]
         for k in unsupported:
-            print(f"  WARNING: dropping unsupported arg '{k}' (not in this vLLM version)")
+            warnings.warn(f"  WARNING: dropping unsupported arg '{k}' (not in this vLLM version)")
             del engine_kwargs[k]
 
-        engine_args = AsyncEngineArgs(**engine_kwargs)
-        self.engine = AsyncLLMEngine.from_engine_args(engine_args)
+        self.engine = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(**engine_kwargs))
 
         # Handle both sync and async get_tokenizer across vLLM versions
         tokenizer = self.engine.get_tokenizer()
@@ -111,7 +70,7 @@ class ChatEngine:
         # ── Stage 1-2: Preprocessing ──
         messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
         prompt = self.tokenizer.apply_chat_template(
-            messages_dicts, tokenize=False, add_generation_prompt=True,
+            messages_dicts, tokenize=False, add_generation_prompt=True, enable_thinking=False,
         )
 
         is_deterministic = request.temperature == 0 or request.temperature is None
@@ -123,15 +82,12 @@ class ChatEngine:
                 return ChatResponse(output=cached.output, logprobs=cached.logprobs)
 
         exact_hash, template_hash = self.analytics.get_hashes(prompt)
-
-        effective_max = request.max_tokens
-
         t_preprocess = time.perf_counter()
 
         # ── Stage 3-5: Queue + Prefill + Decode ──
         sampling_params = SamplingParams(
             temperature=request.temperature,
-            max_tokens=effective_max,
+            max_tokens=request.max_tokens,
             logprobs=1,
         )
         request_id = random_uuid()
@@ -185,7 +141,6 @@ class ChatEngine:
                 "postprocess_ms": round((t_done - t_gen_done) * 1000, 3),
                 "total_ms": round((t_done - t0) * 1000, 3),
                 "output_tokens": output_token_count,
-                "effective_max_tokens": effective_max,
                 "tpot_ms": round((t_gen_done - first_token_time) * 1000 / output_token_count, 3)
                     if first_token_time and output_token_count > 0 else None,
             }) + "\n")
