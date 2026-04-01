@@ -39,6 +39,7 @@ class ChatEngine:
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
         )
         if SPECULATIVE_MODEL:
+            engine_kwargs["enable_chunked_prefill"] = False
             engine_kwargs["speculative_model"] = SPECULATIVE_MODEL
             engine_kwargs["num_speculative_tokens"] = NUM_SPECULATIVE_TOKENS
             if SPECULATIVE_MODEL == "[ngram]":
@@ -88,7 +89,7 @@ class ChatEngine:
         sampling_params = SamplingParams(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
-            logprobs=1,
+            logprobs=1 if not SPECULATIVE_MODEL else None,
         )
         request_id = random_uuid()
         results_generator = self.engine.generate(
