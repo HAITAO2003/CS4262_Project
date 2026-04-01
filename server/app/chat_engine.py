@@ -35,15 +35,18 @@ class ChatEngine:
             enable_chunked_prefill=ENABLE_CHUNKED_PREFILL,
             max_num_seqs=MAX_NUM_SEQS,
             enable_prefix_caching=ENABLE_PREFIX_CACHING,
-            num_scheduler_steps=NUM_SCHEDULER_STEPS,
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+            attention_backend="FLASHINFER",
         )
         if SPECULATIVE_MODEL:
             engine_kwargs["enable_chunked_prefill"] = False
-            engine_kwargs["speculative_model"] = SPECULATIVE_MODEL
-            engine_kwargs["num_speculative_tokens"] = NUM_SPECULATIVE_TOKENS
+            spec_config = {
+                "model": SPECULATIVE_MODEL,
+                "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
+            }
             if SPECULATIVE_MODEL == "[ngram]":
-                engine_kwargs["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
+                spec_config["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
+            engine_kwargs["speculative_config"] = spec_config
 
         valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
         unsupported = [k for k in engine_kwargs if k not in valid_params]
@@ -89,7 +92,7 @@ class ChatEngine:
         sampling_params = SamplingParams(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
-            logprobs=1 if not SPECULATIVE_MODEL else None,
+            logprobs=1,
         )
         request_id = random_uuid()
         results_generator = self.engine.generate(

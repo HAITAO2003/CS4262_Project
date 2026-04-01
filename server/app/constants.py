@@ -14,11 +14,11 @@ GPU_MEMORY_UTILIZATION = 0.95
 MAX_NUM_SEQS = 128
 
 ENABLE_PREFIX_CACHING = True
-NUM_SCHEDULER_STEPS = 8    
+NUM_SCHEDULER_STEPS = 1 
 MAX_NUM_BATCHED_TOKENS = 8192  
 
-#list of models to test out here: "Qwen/Qwen3-1.7B", "Qwen/Qwen3-0.6B" and "ngram"
-SPECULATIVE_MODEL = "Qwen/Qwen3-1.7B"
+#list of models to test out here: "Qwen/Qwen3-1.7B" - OOM errory, "Qwen/Qwen3-0.6B" and "ngram"
+SPECULATIVE_MODEL = "Qwen/Qwen3-0.6B"
 NGRAM_PROMPT_LOOKUP_MAX = 4
 NUM_SPECULATIVE_TOKENS = 3
 
