@@ -6,7 +6,7 @@ including the model identifier, hardware utilization constraints, scheduling
 policies, and advanced optimizations such as caching and speculative decoding.
 """
 
-MODEL_NAME = "Qwen/Qwen3-1.7B-AWQ"
+MODEL_NAME = "Orion-zhen/Qwen3-1.7B-AWQ"
 MAX_MODEL_LENGTH = 512         
 KV_CACHE_DTYPE = "auto"
 ENABLE_CHUNKED_PREFILL = False
