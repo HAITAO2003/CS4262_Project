@@ -38,6 +38,7 @@ class ChatEngine:
             max_num_seqs=MAX_NUM_SEQS,
             enable_prefix_caching=ENABLE_PREFIX_CACHING,
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+            num_scheduler_steps=NUM_SCHEDULER_STEPS,
             attention_backend="FLASHINFER",
         )
         if SPECULATIVE_MODEL:
