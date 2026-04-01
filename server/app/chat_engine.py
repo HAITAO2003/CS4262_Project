@@ -31,6 +31,7 @@ class ChatEngine:
         engine_kwargs: dict = dict(
             model=self.model_name,
             quantization="awq",
+            dtype="float16",
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             max_model_len=MAX_MODEL_LENGTH,
             trust_remote_code=True,
