@@ -6,15 +6,15 @@ including the model identifier, hardware utilization constraints, scheduling
 policies, and advanced optimizations such as caching and speculative decoding.
 """
 
-MODEL_NAME = "Orion-zhen/Qwen3-1.7B-AWQ"
+MODEL_NAME = "Qwen/Qwen3-1.7B-FP8"
 MAX_MODEL_LENGTH = 512         
-KV_CACHE_DTYPE = "auto"
+KV_CACHE_DTYPE = "fp8"
 ENABLE_CHUNKED_PREFILL = False
 GPU_MEMORY_UTILIZATION = 0.90
-MAX_NUM_SEQS = 128
+MAX_NUM_SEQS = 256
 
 ENABLE_PREFIX_CACHING = True
-NUM_SCHEDULER_STEPS = 1 
+NUM_SCHEDULER_STEPS = 10
 MAX_NUM_BATCHED_TOKENS = 8192  
 
 #SPECULATIVE_MODEL = "AngelSlim/Qwen3-1.7B_eagle3"

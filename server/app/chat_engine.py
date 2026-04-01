@@ -3,8 +3,7 @@ import time
 import json
 import os
 import warnings
-os.environ["VLLM_USE_TRITON_AWQ"] = "1"
-os.environ["VLLM_AWQ_USE_MARLIN"] = "0"
+
 from app.constants import *
 from app.prompt_analytics import PromptAnalytics
 from app.response_cache import CachedResponse, ResponseCache
@@ -30,8 +29,7 @@ class ChatEngine:
 
         engine_kwargs: dict = dict(
             model=self.model_name,
-            quantization="awq",
-            dtype="float16",
+            quantization="fp8",            
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             max_model_len=MAX_MODEL_LENGTH,
             trust_remote_code=True,
@@ -140,18 +138,4 @@ class ChatEngine:
         if is_deterministic and cache_key:
             self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
         t_done = time.perf_counter()
-
-        # ── Profiling log ──
-        with open("/tmp/stage_profile.jsonl", "a") as f:
-            f.write(json.dumps({
-                "preprocess_ms": round((t_preprocess - t0) * 1000, 3),
-                "ttft_ms": round((first_token_time - t_preprocess) * 1000, 3) if first_token_time else None,
-                "decode_ms": round((t_gen_done - first_token_time) * 1000, 3) if first_token_time else None,
-                "postprocess_ms": round((t_done - t_gen_done) * 1000, 3),
-                "total_ms": round((t_done - t0) * 1000, 3),
-                "output_tokens": output_token_count,
-                "tpot_ms": round((t_gen_done - first_token_time) * 1000 / output_token_count, 3)
-                    if first_token_time and output_token_count > 0 else None,
-            }) + "\n")
-
         return ChatResponse(output=text_output, logprobs=logprobs)
