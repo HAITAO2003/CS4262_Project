@@ -2,6 +2,7 @@ import click
 import json
 import os
 import sys
+import csv
 import asyncio
 import aiohttp
 import time
@@ -210,6 +211,14 @@ async def run_performance(url, data_path, concurrency, timeout, experiment_name)
     )
 
     result_dir = create_result_dir(experiment_name)
+    csv_path = os.path.join(result_dir, "dataset.csv")
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["prompt", "response", "length"])
+        for r in results:
+            if r.error is None and r.response is not None:
+                writer.writerow([r.prompt, r.response, r.output_token_count])
+    print(f"  CSV dataset saved to: {csv_path}")
     with open(os.path.join(result_dir, "result.json"), "w") as f:
         json.dump(asdict(result), f, indent=2)
     with open(os.path.join(result_dir, "requests.jsonl"), "w") as f:
