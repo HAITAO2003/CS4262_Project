@@ -28,8 +28,7 @@ class ChatEngine:
             return
 
         engine_kwargs: dict = dict(
-            model=self.model_name,
-            quantization="fp8",            
+            model=self.model_name,         
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             max_model_len=MAX_MODEL_LENGTH,
             trust_remote_code=True,
@@ -48,6 +47,8 @@ class ChatEngine:
             }
             if SPECULATIVE_MODEL == "[ngram]":
                 spec_config["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
+                spec_config["ngram_prompt_lookup_min"] = NGRAM_PROMPT_LOOKUP_MIN
+                
             if SPECULATIVE_METHOD:                                                                                                                   
                 spec_config["method"] = SPECULATIVE_METHOD
                 

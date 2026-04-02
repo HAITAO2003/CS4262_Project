@@ -6,9 +6,9 @@ including the model identifier, hardware utilization constraints, scheduling
 policies, and advanced optimizations such as caching and speculative decoding.
 """
 
-MODEL_NAME = "Qwen/Qwen3-1.7B-FP8"
-MAX_MODEL_LENGTH = 512         
-KV_CACHE_DTYPE = "fp8"
+MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
+MAX_MODEL_LENGTH = 8192
+KV_CACHE_DTYPE = "auto"
 ENABLE_CHUNKED_PREFILL = False
 GPU_MEMORY_UTILIZATION = 0.85
 MAX_NUM_SEQS = 256
@@ -16,10 +16,10 @@ MAX_NUM_SEQS = 256
 ENABLE_PREFIX_CACHING = True
 MAX_NUM_BATCHED_TOKENS =  8192
 
-#SPECULATIVE_MODEL = "AngelSlim/Qwen3-1.7B_eagle3"
-SPECULATIVE_MODEL = "[ngram]"
-SPECULATIVE_METHOD = "eagle3" 
-NGRAM_PROMPT_LOOKUP_MAX = 3
-NUM_SPECULATIVE_TOKENS = 2
+SPECULATIVE_MODEL = "Zjcxy-SmartAI/Eagle3-Qwen3-4B-Instruct-2507-zh" # OR [ngram]
+SPECULATIVE_METHOD = "eagle3"   
+NGRAM_PROMPT_LOOKUP_MAX = 5
+NGRAM_PROMPT_LOOKUP_MIN = 2
+NUM_SPECULATIVE_TOKENS = 3
 
 RESPONSE_CACHE_MAX_SIZE = 16_384
