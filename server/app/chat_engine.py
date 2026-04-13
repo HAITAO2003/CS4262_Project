@@ -78,7 +78,7 @@ class ChatEngine:
         # ── Stage 1-2: Preprocessing ──
         messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
         prompt = self.tokenizer.apply_chat_template(
-            messages_dicts, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+            messages_dicts, tokenize=False, add_generation_prompt=True,
         )
 
         is_deterministic = request.temperature == 0 or request.temperature is None
