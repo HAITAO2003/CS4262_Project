@@ -7,7 +7,7 @@ policies, and advanced optimizations such as caching and speculative decoding.
 """
 
 MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
-MAX_MODEL_LENGTH = 2048
+MAX_MODEL_LENGTH = 8192
 
 KV_CACHE_DTYPE = "fp8_e5m2"
 ENABLE_CHUNKED_PREFILL = True
