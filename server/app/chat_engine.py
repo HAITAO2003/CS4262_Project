@@ -26,6 +26,20 @@ class ChatEngine:
     async def initialize(self) -> None:
         if self.is_ready:
             return
+        
+        enable_chunked_prefill = ENABLE_CHUNKED_PREFILL
+        if SPECULATIVE_METHOD:
+            enable_chunked_prefill = False
+            spec_config = {                                                                                                                          
+                "method": SPECULATIVE_METHOD,
+                "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
+            }
+            if SPECULATIVE_MODEL == "ngram":
+                spec_config["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
+                spec_config["ngram_prompt_lookup_min"] = NGRAM_PROMPT_LOOKUP_MIN
+                
+            else:                                                                                                                   
+                spec_config["model"] = SPECULATIVE_MODEL
 
         engine_kwargs: dict = dict(
             model=self.model_name,         
@@ -33,24 +47,13 @@ class ChatEngine:
             max_model_len=MAX_MODEL_LENGTH,
             trust_remote_code=True,
             kv_cache_dtype=KV_CACHE_DTYPE,
-            enable_chunked_prefill=ENABLE_CHUNKED_PREFILL,
+            enable_chunked_prefill=enable_chunked_prefill,
             max_num_seqs=MAX_NUM_SEQS,
             enable_prefix_caching=ENABLE_PREFIX_CACHING,
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
-            attention_backend="FLASHINFER",
+            speculative_config=spec_config if SPECULATIVE_METHOD else None,
+            # attention_backend="FLASHINFER",
         )
-        if SPECULATIVE_MODEL:
-            engine_kwargs["enable_chunked_prefill"] = False
-            spec_config = {                                                                                                                          
-                "model": SPECULATIVE_MODEL,
-                "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
-            }
-            if SPECULATIVE_MODEL == "[ngram]":
-                spec_config["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
-                spec_config["ngram_prompt_lookup_min"] = NGRAM_PROMPT_LOOKUP_MIN
-                
-            if SPECULATIVE_METHOD:                                                                                                                   
-                spec_config["method"] = SPECULATIVE_METHOD
                 
         valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
         unsupported = [k for k in engine_kwargs if k not in valid_params]
