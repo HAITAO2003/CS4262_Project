@@ -54,6 +54,16 @@ class ChatEngine:
             speculative_config=spec_config if SPECULATIVE_METHOD else None,
             # attention_backend="FLASHINFER",
         )
+
+        if SPECULATIVE_MODEL:
+            engine_kwargs["enable_chunked_prefill"] = False
+            engine_kwargs["speculative_model"] = SPECULATIVE_MODEL
+            engine_kwargs["num_speculative_tokens"] = NUM_SPECULATIVE_TOKENS
+            
+            if SPECULATIVE_MODEL == "[ngram]":
+                engine_kwargs["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
+                engine_kwargs["ngram_prompt_lookup_min"] = NGRAM_PROMPT_LOOKUP_MIN
+
                 
         valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
         unsupported = [k for k in engine_kwargs if k not in valid_params]
