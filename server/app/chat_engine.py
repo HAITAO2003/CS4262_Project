@@ -3,6 +3,7 @@ import time
 import json
 import os
 import warnings
+from pathlib import Path
 
 from app.constants import *
 from app.prompt_analytics import PromptAnalytics
@@ -122,9 +123,76 @@ class ChatEngine:
         if inspect.isawaitable(tokenizer):
             tokenizer = await tokenizer
         self.tokenizer = tokenizer
+        if ENABLE_OFFLINE_RESPONSE_CACHE_ARTIFACT:
+            self._load_offline_response_cache_artifact()
 
         self.is_ready = True
         print("vLLM Engine initialized and ready.")
+
+    def _render_prompt(self, messages: list[dict[str, str]]) -> str:
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    def _resolve_offline_cache_artifact_path(self) -> Path:
+        artifact_path = Path(OFFLINE_RESPONSE_CACHE_ARTIFACT_PATH)
+        if not artifact_path.is_absolute():
+            artifact_path = Path(__file__).resolve().parent / artifact_path
+        return artifact_path.resolve()
+
+    def _load_offline_response_cache_artifact(self) -> None:
+        artifact_path = self._resolve_offline_cache_artifact_path()
+        if not artifact_path.exists():
+            warnings.warn(
+                f"Offline response cache artifact not found at '{artifact_path}'. "
+                "Continuing without preloaded cache entries."
+            )
+            return
+
+        loaded = 0
+        skipped = 0
+        with artifact_path.open("r", encoding="utf-8") as artifact_file:
+            for line in artifact_file:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    skipped += 1
+                    continue
+
+                messages = record.get("messages")
+                if messages is None:
+                    prompt_text = record.get("prompt")
+                    if prompt_text is None:
+                        skipped += 1
+                        continue
+                    messages = [{"role": "user", "content": prompt_text}]
+
+                temperature = record.get("temperature")
+                max_tokens = record.get("max_tokens")
+                output = record.get("output")
+                logprobs = record.get("logprobs")
+                if temperature is None or max_tokens is None or output is None or logprobs is None:
+                    skipped += 1
+                    continue
+
+                prompt = self._render_prompt(messages)
+                cache_key = ResponseCache.make_key(prompt, temperature, max_tokens)
+                self.cache.put(
+                    cache_key,
+                    CachedResponse(output=output, logprobs=list(logprobs)),
+                )
+                loaded += 1
+
+        print(f"Loaded {loaded} offline response cache entries from '{artifact_path}'.")
+        if skipped:
+            warnings.warn(
+                f"Skipped {skipped} invalid records while loading offline response cache artifact."
+            )
 
     def _get_request_priority(self, request: ChatRequest, template_hash: str) -> int:
         if request.priority is not None:
@@ -139,9 +207,7 @@ class ChatEngine:
 
         # ── Stage 1-2: Preprocessing ──
         messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
-        prompt = self.tokenizer.apply_chat_template(
-            messages_dicts, tokenize=False, add_generation_prompt=True,
-        )
+        prompt = self._render_prompt(messages_dicts)
 
         is_deterministic = request.temperature == 0 or request.temperature is None
         cache_key = ""

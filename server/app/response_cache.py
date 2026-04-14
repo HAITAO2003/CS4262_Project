@@ -41,6 +41,19 @@ class ResponseCache:
         self.misses = 0
 
     @staticmethod
+    def _normalise_temperature(temperature: float | int | None) -> str:
+        """
+        Canonicalize numeric temperatures so equivalent values like 0 and 0.0
+        hash to the same cache key.
+        """
+        if temperature is None:
+            return "none"
+        try:
+            return format(float(temperature), "g")
+        except (TypeError, ValueError):
+            return str(temperature)
+
+    @staticmethod
     def make_key(prompt: str, temperature: float, max_tokens: int) -> str:
         """
         Construct a deterministic cache key.
@@ -48,7 +61,11 @@ class ResponseCache:
         The key includes temperature to ensure correctness if the
         temperature=0 guard is ever relaxed in the future.
         """
-        raw = f"{prompt}||t={temperature}||m={max_tokens}"
+        raw = (
+            f"{prompt}"
+            f"||t={ResponseCache._normalise_temperature(temperature)}"
+            f"||m={int(max_tokens)}"
+        )
         return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
 
     def get(self, key: str) -> CachedResponse | None:
