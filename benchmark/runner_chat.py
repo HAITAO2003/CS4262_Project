@@ -2,6 +2,7 @@ import click
 import json
 import os
 import sys
+import csv
 import asyncio
 import aiohttp
 import time
@@ -24,6 +25,7 @@ class Request:
     latency: float
     error: Optional[str]
     perplexity: Optional[float]
+    output_token_count: Optional[int] = None
 
 
 @dataclass
@@ -153,11 +155,12 @@ async def run_performance(url, data_path, concurrency, timeout, experiment_name)
                             latency=latency,
                             error=f"Missing 'output' in response: {response}",
                             perplexity=None,
+        
                         )
-                    
                     logprobs = response['logprobs']
                     avg_logprob = sum(logprobs) / len(logprobs)
                     perplexity = np.exp(-avg_logprob)
+                    output_token_count = len(logprobs)
 
                     return Request(
                         prompt=prompt,
@@ -167,6 +170,7 @@ async def run_performance(url, data_path, concurrency, timeout, experiment_name)
                         latency=latency,
                         error=None,
                         perplexity=float(perplexity),
+                        output_token_count=output_token_count,
                     )
                 except Exception as e:
                     print(f"\\n[ERROR] Prompt: {prompt[:30]}... Exception: {e}")
@@ -207,6 +211,14 @@ async def run_performance(url, data_path, concurrency, timeout, experiment_name)
     )
 
     result_dir = create_result_dir(experiment_name)
+    csv_path = os.path.join(result_dir, "dataset.csv")
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["prompt", "response", "length"])
+        for r in results:
+            if r.error is None and r.response is not None:
+                writer.writerow([r.prompt, r.response, r.output_token_count])
+    print(f"  CSV dataset saved to: {csv_path}")
     with open(os.path.join(result_dir, "result.json"), "w") as f:
         json.dump(asdict(result), f, indent=2)
     with open(os.path.join(result_dir, "requests.jsonl"), "w") as f:
