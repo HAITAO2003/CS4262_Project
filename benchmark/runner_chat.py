@@ -112,7 +112,7 @@ async def run_performance(url, data_path, concurrency, timeout, experiment_name)
     print("=== Track 2: Performance Check ===")
     
     prompts = []
-    with open(data_path, 'r') as f:
+    with open(data_path, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line: continue
@@ -212,16 +212,16 @@ async def run_performance(url, data_path, concurrency, timeout, experiment_name)
 
     result_dir = create_result_dir(experiment_name)
     csv_path = os.path.join(result_dir, "dataset.csv")
-    with open(csv_path, "w", newline="") as csvfile:
+    with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(["prompt", "response", "length"])
         for r in results:
             if r.error is None and r.response is not None:
                 writer.writerow([r.prompt, r.response, r.output_token_count])
     print(f"  CSV dataset saved to: {csv_path}")
-    with open(os.path.join(result_dir, "result.json"), "w") as f:
+    with open(os.path.join(result_dir, "result.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(result), f, indent=2)
-    with open(os.path.join(result_dir, "requests.jsonl"), "w") as f:
+    with open(os.path.join(result_dir, "requests.jsonl"), "w", encoding="utf-8") as f:
         for request in results:
             f.write(json.dumps(asdict(request)) + "\n")
     
