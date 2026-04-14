@@ -22,7 +22,13 @@ class ChatEngine:
         self.is_ready: bool = False
         self.analytics = PromptAnalytics()
         self.cache = ResponseCache(max_size=RESPONSE_CACHE_MAX_SIZE)
+        self.template_cache = (
+            ResponseCache(max_size=TEMPLATE_RESPONSE_CACHE_MAX_SIZE)
+            if ENABLE_TEMPLATE_RESPONSE_CACHING
+            else None
+        )
         self.priority_scheduling_enabled: bool = False
+        self.async_scheduling_enabled: bool = False
         self.generate_accepts_priority: bool = False
 
     async def initialize(self) -> None:
@@ -31,6 +37,7 @@ class ChatEngine:
 
         enable_chunked_prefill = ENABLE_CHUNKED_PREFILL
         priority_requested = ENABLE_PRIORITY_SCHEDULING
+        async_requested = ENABLE_ASYNC_SCHEDULING and not SPECULATIVE_METHOD
         if SPECULATIVE_METHOD:
             enable_chunked_prefill = False
             spec_config = {                                                                                                                          
@@ -59,6 +66,15 @@ class ChatEngine:
         )
         if priority_requested:
             engine_kwargs["scheduling_policy"] = "priority"
+        if async_requested:
+            engine_kwargs["async_scheduling"] = True
+        if enable_chunked_prefill:
+            if MAX_NUM_PARTIAL_PREFILLS is not None:
+                engine_kwargs["max_num_partial_prefills"] = MAX_NUM_PARTIAL_PREFILLS
+            if MAX_LONG_PARTIAL_PREFILLS is not None:
+                engine_kwargs["max_long_partial_prefills"] = MAX_LONG_PARTIAL_PREFILLS
+            if LONG_PREFILL_TOKEN_THRESHOLD is not None:
+                engine_kwargs["long_prefill_token_threshold"] = LONG_PREFILL_TOKEN_THRESHOLD
 
         if SPECULATIVE_MODEL:
             engine_kwargs["enable_chunked_prefill"] = False
@@ -72,10 +88,9 @@ class ChatEngine:
                 
         valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
         unsupported = [k for k in engine_kwargs if k not in valid_params]
-        dropped_priority_policy = False
+        dropped_args: set[str] = set()
         for k in unsupported:
-            if k == "scheduling_policy":
-                dropped_priority_policy = True
+            dropped_args.add(k)
             warnings.warn(f"  WARNING: dropping unsupported arg '{k}' (not in this vLLM version)")
             del engine_kwargs[k]
 
@@ -83,13 +98,23 @@ class ChatEngine:
         self.generate_accepts_priority = "priority" in inspect.signature(self.engine.generate).parameters
         self.priority_scheduling_enabled = (
             priority_requested
-            and not dropped_priority_policy
+            and "scheduling_policy" not in dropped_args
             and self.generate_accepts_priority
         )
+        self.async_scheduling_enabled = async_requested and "async_scheduling" not in dropped_args
         if priority_requested and not self.priority_scheduling_enabled:
             warnings.warn(
                 "Priority scheduling was requested but is not fully supported by this vLLM runtime; "
                 "falling back to default request ordering."
+            )
+        if ENABLE_ASYNC_SCHEDULING and SPECULATIVE_METHOD:
+            warnings.warn(
+                "Async scheduling is disabled because speculative decoding is enabled."
+            )
+        elif async_requested and not self.async_scheduling_enabled:
+            warnings.warn(
+                "Async scheduling was requested but is not supported by this vLLM runtime; "
+                "falling back to synchronous scheduling."
             )
 
         # Handle both sync and async get_tokenizer across vLLM versions
@@ -120,6 +145,7 @@ class ChatEngine:
 
         is_deterministic = request.temperature == 0 or request.temperature is None
         cache_key = ""
+        template_cache_key = ""
         if is_deterministic:
             cache_key = ResponseCache.make_key(prompt, request.temperature, request.max_tokens)
             cached = self.cache.get(cache_key)
@@ -127,6 +153,17 @@ class ChatEngine:
                 return ChatResponse(output=cached.output, logprobs=cached.logprobs)
 
         exact_hash, template_hash = self.analytics.get_hashes(prompt)
+        if is_deterministic and self.template_cache is not None:
+            template_cache_key = ResponseCache.make_key(
+                template_hash,
+                request.temperature,
+                request.max_tokens,
+            )
+            template_cached = self.template_cache.get(template_cache_key)
+            if template_cached is not None:
+                if cache_key:
+                    self.cache.put(cache_key, template_cached)
+                return ChatResponse(output=template_cached.output, logprobs=template_cached.logprobs)
         t_preprocess = time.perf_counter()
 
         # ── Stage 3-5: Queue + Prefill + Decode ──
@@ -177,6 +214,9 @@ class ChatEngine:
         self.analytics.record_completion(exact_hash, template_hash, output_token_count)
 
         if is_deterministic and cache_key:
-            self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
+            cached_response = CachedResponse(output=text_output, logprobs=logprobs)
+            self.cache.put(cache_key, cached_response)
+            if template_cache_key and self.template_cache is not None:
+                self.template_cache.put(template_cache_key, cached_response)
         t_done = time.perf_counter()
         return ChatResponse(output=text_output, logprobs=logprobs)
