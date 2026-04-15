@@ -1,0 +1,12 @@
+{
+  "total_requests": 13435,
+  "passed": 13435,
+  "failed": 0,
+  "pass_rate": 1.0,
+  "fail_rate": 0.0,
+  "throughput": 31.781374732227462,
+  "mean_latency": 4.003565058709966,
+  "p50_latency": 4.389989614486694,
+  "p99_latency": 7.814907536506653,
+  "average_perplexity": 1.22598893692028
+}
