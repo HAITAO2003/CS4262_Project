@@ -1,33 +1,10 @@
-"""
-Chat engine with advanced vLLM optimisations and application-level caching.
-
-This module initializes the AsyncLLMEngine with specific optimizations 
-including KV-cache quantization, chunked prefill, specific memory utilization,
-and strict sequence limits. It also provides a cached generate method that uses 
-SLA-aware priority scheduling.
-"""
-
-from __future__ import annotations
-
 import inspect
+import time
+import json
+import os
+import warnings
 
-from app.constants import (
-    ENABLE_CHUNKED_PREFILL,
-    ENABLE_PREFIX_CACHING,
-    ENABLE_SPECULATIVE,
-    GPU_MEMORY_UTILIZATION,
-    KV_CACHE_DTYPE,
-    MAX_MODEL_LENGTH,
-    MAX_NUM_BATCHED_TOKENS,
-    MAX_NUM_SEQS,
-    MODEL_NAME,
-    NGRAM_PROMPT_LOOKUP_MAX,
-    NUM_SCHEDULER_STEPS,
-    NUM_SPECULATIVE_TOKENS,
-    RESPONSE_CACHE_MAX_SIZE,
-    SCHEDULING_POLICY,
-    SPECULATIVE_MODEL,
-)
+from app.constants import *
 from app.prompt_analytics import PromptAnalytics
 from app.response_cache import CachedResponse, ResponseCache
 from app.schemas import ChatRequest, ChatResponse
@@ -38,19 +15,7 @@ from vllm.utils import random_uuid
 
 
 class ChatEngine:
-    """
-    High-performance chat engine wrapping vLLM's AsyncLLMEngine.
-    
-    Implements multi-layer optimizations:
-      1. Deterministic response caching
-      2. SLA-aware priority scheduling
-      3. Underlying vLLM hardware optimizations
-    """
-
     def __init__(self) -> None:
-        """
-        Initialize the ChatEngine state.
-        """
         self.model_name: str = MODEL_NAME
         self.engine: AsyncLLMEngine | None = None
         self.tokenizer = None
@@ -59,73 +24,74 @@ class ChatEngine:
         self.cache = ResponseCache(max_size=RESPONSE_CACHE_MAX_SIZE)
 
     async def initialize(self) -> None:
-        """
-        Asynchronously initialize the vLLM engine and tokenizer with configured kwargs.
-        """
         if self.is_ready:
             return
-
-        print(f"Initializing vLLM with model: {self.model_name}...")
-        print(f"  KV-cache dtype       : {KV_CACHE_DTYPE}")
-        print(f"  Chunked prefill      : {ENABLE_CHUNKED_PREFILL}")
-        print(f"  GPU memory util      : {GPU_MEMORY_UTILIZATION}")
-        print(f"  Max num sequences    : {MAX_NUM_SEQS}")
-        print(f"  Scheduling policy    : {SCHEDULING_POLICY}")
-        print(f"  Prefix caching (APC) : {ENABLE_PREFIX_CACHING}")
-        print(f"  Scheduler steps      : {NUM_SCHEDULER_STEPS}")
-        print(f"  Max batched tokens   : {MAX_NUM_BATCHED_TOKENS}")
-        print(f"  Max model length     : {MAX_MODEL_LENGTH}")
-        print(f"  Speculative decoding : {ENABLE_SPECULATIVE}")
-        print(f"  Response cache size  : {RESPONSE_CACHE_MAX_SIZE}")
+        
+        enable_chunked_prefill = ENABLE_CHUNKED_PREFILL
+        if SPECULATIVE_METHOD:
+            enable_chunked_prefill = False
+            spec_config = {                                                                                                                          
+                "method": SPECULATIVE_METHOD,
+                "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
+            }
+            if SPECULATIVE_MODEL == "ngram":
+                spec_config["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
+                spec_config["ngram_prompt_lookup_min"] = NGRAM_PROMPT_LOOKUP_MIN
+                
+            else:                                                                                                                   
+                spec_config["model"] = SPECULATIVE_MODEL
 
         engine_kwargs: dict = dict(
-            model=self.model_name,
+            model=self.model_name,         
             gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
             max_model_len=MAX_MODEL_LENGTH,
             trust_remote_code=True,
             kv_cache_dtype=KV_CACHE_DTYPE,
-            enable_chunked_prefill=ENABLE_CHUNKED_PREFILL,
+            enable_chunked_prefill=enable_chunked_prefill,
             max_num_seqs=MAX_NUM_SEQS,
-            scheduling_policy=SCHEDULING_POLICY,
             enable_prefix_caching=ENABLE_PREFIX_CACHING,
-            num_scheduler_steps=NUM_SCHEDULER_STEPS,
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+            speculative_config=spec_config if SPECULATIVE_METHOD else None,
+            # attention_backend="FLASHINFER",
         )
 
-        if ENABLE_SPECULATIVE:
+        if SPECULATIVE_MODEL:
+            engine_kwargs["enable_chunked_prefill"] = False
             engine_kwargs["speculative_model"] = SPECULATIVE_MODEL
             engine_kwargs["num_speculative_tokens"] = NUM_SPECULATIVE_TOKENS
-            engine_kwargs["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
-            print(f"  Spec model           : {SPECULATIVE_MODEL}")
-            print(f"  Spec tokens          : {NUM_SPECULATIVE_TOKENS}")
-            print(f"  Ngram lookup max     : {NGRAM_PROMPT_LOOKUP_MAX}")
+            
+            if SPECULATIVE_MODEL == "[ngram]":
+                engine_kwargs["ngram_prompt_lookup_max"] = NGRAM_PROMPT_LOOKUP_MAX
+                engine_kwargs["ngram_prompt_lookup_min"] = NGRAM_PROMPT_LOOKUP_MIN
 
+                
         valid_params = set(inspect.signature(AsyncEngineArgs.__init__).parameters.keys())
         unsupported = [k for k in engine_kwargs if k not in valid_params]
         for k in unsupported:
-            print(f"  WARNING: dropping unsupported arg '{k}' (not in this vLLM version)")
+            warnings.warn(f"  WARNING: dropping unsupported arg '{k}' (not in this vLLM version)")
             del engine_kwargs[k]
 
-        engine_args = AsyncEngineArgs(**engine_kwargs)
-        self.engine = AsyncLLMEngine.from_engine_args(engine_args)
-        self.tokenizer = await self.engine.get_tokenizer()
+        self.engine = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(**engine_kwargs))
+
+        # Handle both sync and async get_tokenizer across vLLM versions
+        tokenizer = self.engine.get_tokenizer()
+        if inspect.isawaitable(tokenizer):
+            tokenizer = await tokenizer
+        self.tokenizer = tokenizer
 
         self.is_ready = True
         print("vLLM Engine initialized and ready.")
 
     async def generate(self, request: ChatRequest) -> ChatResponse:
-        """
-        Generate a language model response using the provided chat request constraints.
-        Applies response caching and SLA-aware priority scheduling automatically.
-        """
+        t0 = time.perf_counter()
+
         if not self.is_ready:
             raise Exception("Engine is still initializing. Please try again later.")
 
+        # ── Stage 1-2: Preprocessing ──
         messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
         prompt = self.tokenizer.apply_chat_template(
-            messages_dicts,
-            tokenize=False,
-            add_generation_prompt=True,
+            messages_dicts, tokenize=False, add_generation_prompt=True,
         )
 
         is_deterministic = request.temperature == 0 or request.temperature is None
@@ -136,32 +102,29 @@ class ChatEngine:
             if cached is not None:
                 return ChatResponse(output=cached.output, logprobs=cached.logprobs)
 
-        estimated_tokens = len(prompt) // 4
-        if request.priority is not None:
-            priority = request.priority
-        else:
-            priority = self.analytics.compute_priority(prompt, estimated_tokens)
-
         exact_hash, template_hash = self.analytics.get_hashes(prompt)
+        t_preprocess = time.perf_counter()
 
+        # ── Stage 3-5: Queue + Prefill + Decode ──
         sampling_params = SamplingParams(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             logprobs=1,
         )
-
         request_id = random_uuid()
         results_generator = self.engine.generate(
-            prompt,
-            sampling_params,
-            request_id,
-            priority=priority,
+            prompt, sampling_params, request_id,
         )
 
+        first_token_time = None
         final_output = None
         async for request_output in results_generator:
+            if first_token_time is None:
+                first_token_time = time.perf_counter()
             final_output = request_output
+        t_gen_done = time.perf_counter()
 
+        # ── Stage 6: Response assembly ──
         if final_output is None:
             raise Exception("No output generated")
 
@@ -182,11 +145,11 @@ class ChatEngine:
                 else:
                     raise RuntimeError(f"Token ID {token_id} not found in logprobs at step {i}")
 
+        # ── Stage 7: Metrics + cache ──
         output_token_count = len(output_data.token_ids)
         self.analytics.record_completion(exact_hash, template_hash, output_token_count)
 
         if is_deterministic and cache_key:
             self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
-
+        t_done = time.perf_counter()
         return ChatResponse(output=text_output, logprobs=logprobs)
-
