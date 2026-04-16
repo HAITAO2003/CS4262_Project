@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1.7
+
+ARG TRTLLM_IMAGE=nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc11
+FROM ${TRTLLM_IMAGE}
+
+# Keep the app layer small and continue using uv for Python package management.
+COPY --from=ghcr.io/astral-sh/uv:0.7.13 /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH=/opt/venv/bin:$PATH \
+    PORT=8000 \
+    HF_HOME=/root/.cache/huggingface \
+    TENSORRT_SERVE_CMD=trtllm-serve \
+    TENSORRT_SERVE_BACKEND=tensorrt \
+    TENSORRT_DISABLE_MPI=true \
+    TENSORRT_SINGLE_PROCESS_WORKER=true
+
+# Do not `uv sync` against the current pyproject here:
+# it still includes `vllm`, while this image is meant to validate a TensorRT-first stack.
+RUN uv venv /opt/venv
+RUN uv pip install --python /opt/venv/bin/python \
+    aiohttp \
+    fastapi \
+    "pydantic>=2,<3" \
+    sentencepiece \
+    transformers \
+    uvicorn
+
+COPY app ./app
+COPY scripts ./scripts
+COPY README.md ./
+
+EXPOSE 8000
+
+CMD ["uv", "run", "--python", "/opt/venv/bin/python", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
