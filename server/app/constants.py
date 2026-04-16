@@ -8,7 +8,7 @@ policies, and advanced optimizations such as caching and speculative decoding.
 
 MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
 MAX_MODEL_LENGTH = 8192
-KV_CACHE_DTYPE = "fp8_e5m2"
+KV_CACHE_DTYPE = "fp8"
 ENABLE_CHUNKED_PREFILL = False
 GPU_MEMORY_UTILIZATION = 0.85
 MAX_NUM_SEQS = 256

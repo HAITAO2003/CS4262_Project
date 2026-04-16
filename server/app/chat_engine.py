@@ -53,6 +53,7 @@ class ChatEngine:
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
             speculative_config=spec_config if SPECULATIVE_METHOD else None,
             # attention_backend="FLASHINFER",
+            quantization="fp8",
         )
 
         if SPECULATIVE_MODEL:
