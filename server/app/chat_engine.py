@@ -96,61 +96,71 @@ class ChatEngine:
         )
 
         is_deterministic = request.temperature == 0 or request.temperature is None
-        cache_key = ""
+        cache_key = None
+        is_cache_owner = False
         if is_deterministic:
-            cache_key = ResponseCache.make_key(prompt, request.temperature, request.max_tokens)
-            cached = self.cache.get(cache_key)
+            cache_key = ResponseCache.make_key(prompt, request.max_tokens)
+            cached, pending, is_cache_owner = self.cache.get_or_reserve(cache_key)
             if cached is not None:
                 return ChatResponse(output=cached.output, logprobs=cached.logprobs)
+            if pending is not None and not is_cache_owner:
+                cached = await pending
+                return ChatResponse(output=cached.output, logprobs=cached.logprobs)
 
-        exact_hash, template_hash = self.analytics.get_hashes(prompt)
-        t_preprocess = time.perf_counter()
+        try:
+            exact_hash, template_hash = self.analytics.get_hashes(prompt)
+            t_preprocess = time.perf_counter()
 
-        # ── Stage 3-5: Queue + Prefill + Decode ──
-        sampling_params = SamplingParams(
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            logprobs=1,
-        )
-        request_id = random_uuid()
-        results_generator = self.engine.generate(
-            prompt, sampling_params, request_id,
-        )
+            # ── Stage 3-5: Queue + Prefill + Decode ──
+            sampling_params = SamplingParams(
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                logprobs=1,
+            )
+            request_id = random_uuid()
+            results_generator = self.engine.generate(
+                prompt, sampling_params, request_id,
+            )
 
-        first_token_time = None
-        final_output = None
-        async for request_output in results_generator:
-            if first_token_time is None:
-                first_token_time = time.perf_counter()
-            final_output = request_output
-        t_gen_done = time.perf_counter()
+            first_token_time = None
+            final_output = None
+            async for request_output in results_generator:
+                if first_token_time is None:
+                    first_token_time = time.perf_counter()
+                final_output = request_output
+            t_gen_done = time.perf_counter()
 
-        # ── Stage 6: Response assembly ──
-        if final_output is None:
-            raise Exception("No output generated")
+            # ── Stage 6: Response assembly ──
+            if final_output is None:
+                raise Exception("No output generated")
 
-        output_data = final_output.outputs[0]
-        text_output = output_data.text
+            output_data = final_output.outputs[0]
+            text_output = output_data.text
 
-        if output_data.logprobs is None:
-            raise RuntimeError("logprobs are missing from vLLM output")
-        if not output_data.token_ids:
-            raise RuntimeError("token_ids is empty, cannot provide logprobs")
+            if output_data.logprobs is None:
+                raise RuntimeError("logprobs are missing from vLLM output")
+            if not output_data.token_ids:
+                raise RuntimeError("token_ids is empty, cannot provide logprobs")
 
-        logprobs: list[float] = []
-        for i, token_id in enumerate(output_data.token_ids):
-            if i < len(output_data.logprobs):
-                step_logprobs = output_data.logprobs[i]
-                if token_id in step_logprobs:
-                    logprobs.append(step_logprobs[token_id].logprob)
-                else:
-                    raise RuntimeError(f"Token ID {token_id} not found in logprobs at step {i}")
+            logprobs: list[float] = []
+            for i, token_id in enumerate(output_data.token_ids):
+                if i < len(output_data.logprobs):
+                    step_logprobs = output_data.logprobs[i]
+                    if token_id in step_logprobs:
+                        logprobs.append(step_logprobs[token_id].logprob)
+                    else:
+                        raise RuntimeError(f"Token ID {token_id} not found in logprobs at step {i}")
 
-        # ── Stage 7: Metrics + cache ──
-        output_token_count = len(output_data.token_ids)
-        self.analytics.record_completion(exact_hash, template_hash, output_token_count)
+            # ── Stage 7: Metrics + cache ──
+            output_token_count = len(output_data.token_ids)
+            self.analytics.record_completion(exact_hash, template_hash, output_token_count)
 
-        if is_deterministic and cache_key:
-            self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
-        t_done = time.perf_counter()
-        return ChatResponse(output=text_output, logprobs=logprobs)
+            cached_response = CachedResponse(output=text_output, logprobs=logprobs)
+            if is_deterministic and cache_key is not None:
+                self.cache.put(cache_key, cached_response)
+            t_done = time.perf_counter()
+            return ChatResponse(output=text_output, logprobs=logprobs)
+        except BaseException as exc:
+            if is_deterministic and cache_key is not None and is_cache_owner:
+                self.cache.fail(cache_key, exc)
+            raise
