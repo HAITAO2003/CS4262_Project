@@ -1,19 +1,17 @@
 """
 Thread-safe LRU response cache for deterministic (temperature=0) requests.
 
-Caches complete (output, logprobs) tuples keyed on the SHA-256 hash of the
-fully-rendered prompt string plus the serialised sampling parameters.
-
-This is fully generalizable: any dataset with repeated prompts benefits, and
-the per-lookup overhead for cache misses is a single SHA-256 hash (~1 us).
+Caches complete (output, logprobs) tuples keyed on the rendered prompt string
+and max token limit.
 """
 
 from __future__ import annotations
 
-import hashlib
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
+
+CacheKey = tuple[int, str]
 
 
 @dataclass(frozen=True)
@@ -35,23 +33,19 @@ class ResponseCache:
         Initialize the response cache.
         """
         self._lock = threading.Lock()
-        self._store: OrderedDict[str, CachedResponse] = OrderedDict()
+        self._store: OrderedDict[CacheKey, CachedResponse] = OrderedDict()
         self._max_size = max_size
         self.hits = 0
         self.misses = 0
 
     @staticmethod
-    def make_key(prompt: str, temperature: float, max_tokens: int) -> str:
+    def make_key(prompt: str, max_tokens: int) -> CacheKey:
         """
         Construct a deterministic cache key.
-
-        The key includes temperature to ensure correctness if the
-        temperature=0 guard is ever relaxed in the future.
         """
-        raw = f"{prompt}||t={temperature}||m={max_tokens}"
-        return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+        return (max_tokens, prompt)
 
-    def get(self, key: str) -> CachedResponse | None:
+    def get(self, key: CacheKey) -> CachedResponse | None:
         """
         Retrieve a cached response by key. Returns None if not found.
         """
@@ -64,7 +58,7 @@ class ResponseCache:
             self.misses += 1
             return None
 
-    def put(self, key: str, response: CachedResponse) -> None:
+    def put(self, key: CacheKey, response: CachedResponse) -> None:
         """
         Insert or update a response in the cache. Evicts the oldest entry if max_size is exceeded.
         """

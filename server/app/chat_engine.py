@@ -96,9 +96,9 @@ class ChatEngine:
         )
 
         is_deterministic = request.temperature == 0 or request.temperature is None
-        cache_key = ""
+        cache_key = None
         if is_deterministic:
-            cache_key = ResponseCache.make_key(prompt, request.temperature, request.max_tokens)
+            cache_key = ResponseCache.make_key(prompt, request.max_tokens)
             cached = self.cache.get(cache_key)
             if cached is not None:
                 return ChatResponse(output=cached.output, logprobs=cached.logprobs)
@@ -150,7 +150,7 @@ class ChatEngine:
         output_token_count = len(output_data.token_ids)
         self.analytics.record_completion(exact_hash, template_hash, output_token_count)
 
-        if is_deterministic and cache_key:
+        if is_deterministic and cache_key is not None:
             self.cache.put(cache_key, CachedResponse(output=text_output, logprobs=logprobs))
         t_done = time.perf_counter()
         return ChatResponse(output=text_output, logprobs=logprobs)
